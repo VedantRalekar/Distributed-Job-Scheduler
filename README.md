@@ -5,23 +5,30 @@ A production-inspired distributed job scheduling platform designed to reliably e
 The platform allows users to create and manage projects, configure independent job queues, schedule different types of jobs, and monitor distributed workers through a web dashboard. Jobs are persisted in the database and progress through a controlled lifecycle from Queued → Scheduled → Claimed → Running → Completed, with retry handling and Dead Letter Queue support for permanent failures.
 
 The system is designed around multiple workers that independently poll queues, atomically claim jobs to prevent duplicate execution, execute jobs concurrently according to queue limits, maintain worker heartbeats, and gracefully shut down without losing active work.
-## Quick start
 
+## Quick start
 Prerequisites: Node.js 20+ and Docker Desktop (or separately running PostgreSQL 17 and Redis 8).
 
-1. Install dependencies:
+1. Clone the repository
+
+   ```bash
+   git clone https://github.com/VedantRalekar/Distributed-Job-Scheduler.git
+   cd Distributed-Job-Scheduler
+   ```
+
+2. Install dependencies:
 
    ```bash
    npm install
    ```
 
-2. Start PostgreSQL and Redis:
+3. Start PostgreSQL and Redis:
 
    ```bash
    docker compose up -d
    ```
 
-3. Create `.env` from the following values. Do not commit it.
+4. Create `.env` from the following values. Do not commit it.
 
    ```dotenv
    PORT=3000
@@ -37,30 +44,54 @@ Prerequisites: Node.js 20+ and Docker Desktop (or separately running PostgreSQL 
    SCHEDULER_POLL_MS=5000
    ```
 
-4. Create the schema:
+5. Create the schema:
 
    ```bash
+   $env:DATABASE_URL="postgresql://scheduler:scheduler@localhost:5432/job_scheduler"
    npm run db:init
    ```
 
-5. Start the API, then start a worker in another terminal. `WORKER_QUEUE_ID` must be the UUID of a queue created through the API.
+6. Start the API, then start a worker in another terminal. `WORKER_QUEUE_ID` must be the UUID of a queue created through the API.
 
    ```bash
    npm run dev
-   $env:WORKER_QUEUE_ID = 'your-queue-uuid'; npm run worker
+   ```
+   start a worker in another terminal.
+   
+   ```bash
+   npm run worker
    ```
 
-Open `http://localhost:3000/api/health` to verify the API. The bundled dashboard is served from `/`.
+   Open `http://localhost:3000/api/health` to verify the API. The bundled dashboard is served from `/`.
 
-Run the unit tests with:
+7. Open Frontend
 
-```bash
-npm test
-```
+   Open the frontend in your browser.
+
+   ```
+   http://localhost:3000
+   ```
+   
+   or
+   
+   ```
+   index.html
+   ```
+   depending on your setup.
+
 
 ## Architecture
+<p>
+   <img src="DJSarchitecture.png" width="100%" height="60%"/>
+</p>
+
+## ER Diagram
+<p>
+   <img src="ER_Diagram.jpg" width="100%" height="60%"/>
+</p>
 
 ## API documentation
+
 ### Register
 POST /api/auth/register
 ```
@@ -220,6 +251,16 @@ Typical workflow:
 
 Supported worker payloads are `echo`, `sum`, `sleep` (capped at 30 seconds), and `fail`. This executor is intentionally a safe demonstration surface; it does not run arbitrary commands.
 
-## Test coverage
-
-The tests use Node's built-in test runner and need no running services. They cover retry backoff strategies and caps, jitter bounds, and worker payload execution success/failure behavior. Database-backed integration tests are deliberately not included yet; see the testing follow-up in the design document.
+## Testing
+Run both tests with:
+```
+npm test
+```
+Run only executer.test.js
+```
+node --test tests/executer.test.js
+```
+Run only retry.test.js
+```
+node --test tests/retry.test.js
+```
