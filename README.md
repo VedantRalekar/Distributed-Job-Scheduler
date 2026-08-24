@@ -1,7 +1,10 @@
-# Distributed Job Scheduler
+# Distributed Job Scheduling Platform
 
-A multi-tenant job scheduling service built with Node.js, Express, PostgreSQL, and Redis. It lets authenticated organization members create projects and queues, enqueue immediate or delayed work, operate workers, schedule recurring jobs, and inspect executions or dead-lettered work.
+A production-inspired distributed job scheduling platform designed to reliably execute asynchronous background jobs across multiple worker processes. The system focuses on backend engineering fundamentals such as concurrency, database consistency, reliability, fault tolerance, API design, and full-stack implementation rather than simply maximizing the number of features.
 
+The platform allows users to create and manage projects, configure independent job queues, schedule different types of jobs, and monitor distributed workers through a web dashboard. Jobs are persisted in the database and progress through a controlled lifecycle from Queued → Scheduled → Claimed → Running → Completed, with retry handling and Dead Letter Queue support for permanent failures.
+
+The system is designed around multiple workers that independently poll queues, atomically claim jobs to prevent duplicate execution, execute jobs concurrently according to queue limits, maintain worker heartbeats, and gracefully shut down without losing active work.
 ## Quick start
 
 Prerequisites: Node.js 20+ and Docker Desktop (or separately running PostgreSQL 17 and Redis 8).
@@ -57,59 +60,165 @@ npm test
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  U[Dashboard / API client] -->|JWT HTTP| A[Express API]
-  A --> PG[(PostgreSQL)]
-  A --> R[(Redis)]
-  S[Scheduler process\ncron-parser] -->|materializes due schedules| PG
-  W[Worker process] -->|atomically claims jobs| PG
-  W -->|distributed job lock| R
-  W -->|heartbeats, executions, logs| PG
-  A -->|metrics / status| U
-```
-
-The API process hosts the recurring-job scheduler. Workers are separate Node processes and are horizontally scalable; each worker is assigned one queue using `WORKER_QUEUE_ID`.
-
-## Data model
-
-```mermaid
-erDiagram
-  ORGANIZATIONS ||--o{ ORGANIZATION_MEMBERS : has
-  USERS ||--o{ ORGANIZATION_MEMBERS : joins
-  ORGANIZATIONS ||--o{ PROJECTS : owns
-  PROJECTS ||--o{ RETRY_POLICIES : defines
-  PROJECTS ||--o{ QUEUES : contains
-  RETRY_POLICIES o|--o{ QUEUES : configures
-  QUEUES ||--o{ JOBS : receives
-  QUEUES ||--o{ SCHEDULED_JOBS : schedules
-  RETRY_POLICIES o|--o{ SCHEDULED_JOBS : configures
-  QUEUES ||--o{ WORKERS : serves
-  JOBS ||--o{ JOB_EXECUTIONS : attempts
-  WORKERS o|--o{ JOB_EXECUTIONS : performs
-  WORKERS ||--|| WORKER_HEARTBEATS : reports
-  JOB_EXECUTIONS ||--o{ JOB_LOGS : emits
-  JOBS ||--o{ DEAD_LETTER_ENTRIES : may_create
-  JOB_EXECUTIONS o|--o{ DEAD_LETTER_ENTRIES : records
-```
-
-`jobs.status` moves through `QUEUED`/`SCHEDULED` → `CLAIMED` → `RUNNING` → `COMPLETED`, or returns to `SCHEDULED` for a retry. Exhausted attempts become `FAILED` and create a dead-letter entry.
-
 ## API documentation
+### Register
+POST /api/auth/register
+```
+{
+  "email": "admin@example.com",
+  "password": "password123",
+  "displayName": "Admin",
+  "organizationName": "Demo Org"
+}
+```
 
-All API routes return `{ "success": true, "data": ... }` on success. Protected routes require `Authorization: Bearer <token>`. See [the complete endpoint reference](docs/API.md), including request bodies and response shapes.
+### Create project
+POST /api/projects
+```
+{
+  "organizationId": "<ORG_ID>",
+  "name": "Demo Project"
+}
+```
+### Create retry policy
+POST /api/projects/<PROJECT_ID>/retry-policies
+```
+{
+  "name": "Exponential Retry",
+  "maxAttempts": 3,
+  "backoffStrategy": "exponential",
+  "baseDelayMs": 1000,
+  "maxDelayMs": 30000,
+  "jitter": true
+}
+```
+### Create queue
+POST /api/queues
+```
+{
+  "projectId": "<PROJECT_ID>",
+  "name": "default",
+  "concurrencyLimit": 5,
+  "retryPolicyId": "<RETRY_POLICY_ID>"
+}
+```
+Start worker
+Set:
+```
+WORKER_QUEUE_ID=<QUEUE_ID>
+WORKER_CAPACITY=5
+```
+Then:
+```
+npm run worker
+```
+Multiple worker processes can be started against the same queue.
 
+### Immediate job
+POST /api/jobs
+```
+{
+  "queueId": "<QUEUE_ID>",
+  "priority": 10,
+  "payload": {
+    "type": "echo",
+    "message": "hello distributed workers"
+  }
+}
+```
+### Delayed job
+```
+{
+  "queueId": "<QUEUE_ID>",
+  "priority": 5,
+  "delayMs": 10000,
+  "payload": {
+    "type": "sleep",
+    "ms": 1000
+  }
+}
+```
+### Scheduled job
+```
+{
+  "queueId": "<QUEUE_ID>",
+  "scheduledAt": "2026-08-23T04:00:00.000Z",
+  "payload": {
+    "type": "echo",
+    "message": "scheduled"
+  }
+}
+```
+### Batch jobs
+POST /api/jobs/batch
+```
+{
+  "queueId": "<QUEUE_ID>",
+  "jobs": [
+    {
+      "priority": 10,
+      "payload": {
+        "type": "echo",
+        "message": "one"
+      }
+    },
+    {
+      "priority": 5,
+      "payload": {
+        "type": "echo",
+        "message": "two"
+      }
+    }
+  ]
+}
+```
+### Recurring jobs
+POST /api/schedules
+```
+{
+  "queueId": "<QUEUE_ID>",
+  "cronExpr": "*/5 * * * *",
+  "timezone": "UTC",
+  "nextRunAt": "2026-08-23T04:05:00.000Z",
+  "payload": {
+    "type": "echo",
+    "message": "recurring"
+  }
+}
+```
+### Worker handlers
+Supported demo payloads:
+```
+{
+  "type": "echo",
+  "message": "hello"
+}
+```
+```
+{
+  "type": "sleep",
+  "ms": 2000
+}
+```
+```
+{
+  "type": "sum",
+  "values": [10, 20, 30]
+}
+```
+```
+{
+  "type": "fail",
+  "message": "simulate failure"
+}
+```
+All API routes return `{ "success": true, "data": ... }` on success. Protected routes require `Authorization: Bearer <token>`. 
 Typical workflow:
-
 1. `POST /api/auth/register` creates a user, organization, and JWT.
 2. `POST /api/projects` and `POST /api/queues` create a destination for work.
 3. Start a worker with that queue UUID and use `POST /api/jobs` to enqueue payloads.
 
 Supported worker payloads are `echo`, `sum`, `sleep` (capped at 30 seconds), and `fail`. This executor is intentionally a safe demonstration surface; it does not run arbitrary commands.
-
-## Design decisions
-
-The major reliability and scalability decisions, plus their trade-offs and current limitations, are recorded in [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md).
 
 ## Test coverage
 
